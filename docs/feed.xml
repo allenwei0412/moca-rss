@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss version="2.0">
+  <channel>
+    <title>臺北當代藝術館｜新展預告</title>
+    <link>https://www.mocataipei.org.tw/tw/ExhibitionAndEvent/Exhibitions/Upcoming</link>
+    <description>首次執行 GitHub Actions 後，這裡會自動產生展覽 RSS。</description>
+    <language>zh-TW</language>
+  </channel>
+</rss>
