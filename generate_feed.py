@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Generate an RSS 2.0 feed for MoCA Taipei upcoming exhibitions.
+"""Generate one RSS 2.0 feed for MoCA Taipei current + upcoming exhibitions.
 
 The parser intentionally avoids brittle CSS selectors. It looks for links to
 MoCA exhibition detail pages whose anchor text contains two exhibition dates.
-State is persisted in state.json so each exhibition gets a stable first-seen
-publication time and does not reappear as a new RSS item on every refresh.
+Two official pages are monitored:
+- Current Exhibition (當期展覽)
+- Upcoming (新展預告)
+
+The official exhibition detail URL is used as the stable identity, so an
+exhibition moving from Upcoming to Current does not become a duplicate item.
 """
 
 from __future__ import annotations
@@ -23,10 +27,25 @@ from urllib.parse import unquote, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
-SOURCE_URL = "https://www.mocataipei.org.tw/tw/ExhibitionAndEvent/Exhibitions/Upcoming"
 BASE_URL = "https://www.mocataipei.org.tw"
-FEED_TITLE = "臺北當代藝術館｜新展預告"
-FEED_DESCRIPTION = "自動追蹤臺北當代藝術館（MoCA Taipei）官方網站的新展預告。"
+EXHIBITIONS_URL = f"{BASE_URL}/tw/ExhibitionAndEvent/Exhibitions"
+SOURCES = (
+    (
+        "當期展覽",
+        f"{BASE_URL}/tw/ExhibitionAndEvent/Exhibitions/Current%20Exhibition",
+        "當期展覽",
+    ),
+    (
+        "新展預告",
+        f"{BASE_URL}/tw/ExhibitionAndEvent/Exhibitions/Upcoming",
+        "新展預告",
+    ),
+)
+FEED_TITLE = "臺北當代藝術館｜當期展覽＋新展預告"
+FEED_DESCRIPTION = (
+    "自動追蹤臺北當代藝術館（MoCA Taipei）官方網站的當期展覽與新展預告，"
+    "並附上每檔展覽的開始與結束日期。"
+)
 STATE_PATH = Path("state.json")
 OUTPUT_PATH = Path("docs/feed.xml")
 MAX_ARCHIVED_ITEMS = 100
@@ -50,6 +69,8 @@ class Exhibition:
     url: str
     start_date: str
     end_date: str
+    status: str
+    source_url: str
 
 
 class AnchorParser(HTMLParser):
@@ -106,7 +127,11 @@ def iso_date(match: re.Match[str]) -> str:
     return value.strftime("%Y-%m-%d")
 
 
-def parse_exhibitions(page_html: str) -> list[Exhibition]:
+def parse_exhibitions(
+    page_html: str,
+    status: str = "展覽",
+    source_url: str = EXHIBITIONS_URL,
+) -> list[Exhibition]:
     parser = AnchorParser()
     parser.feed(page_html)
 
@@ -133,15 +158,30 @@ def parse_exhibitions(page_html: str) -> list[Exhibition]:
                 url=absolute,
                 start_date=iso_date(dates[0]),
                 end_date=iso_date(dates[1]),
+                status=status,
+                source_url=source_url,
             )
         )
 
     return exhibitions
 
 
-def fetch_page() -> str:
+def merge_exhibitions(groups: Iterable[Iterable[Exhibition]]) -> list[Exhibition]:
+    """Deduplicate by official detail URL.
+
+    SOURCES is ordered Current first, so if the site briefly lists an exhibition
+    in both tabs during a transition, the Current classification wins.
+    """
+    merged: dict[str, Exhibition] = {}
+    for group in groups:
+        for exhibition in group:
+            merged.setdefault(exhibition.url, exhibition)
+    return list(merged.values())
+
+
+def fetch_page(url: str) -> str:
     request = Request(
-        SOURCE_URL,
+        url,
         headers={
             "User-Agent": (
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -160,7 +200,7 @@ def fetch_page() -> str:
 
 def load_state() -> dict:
     if not STATE_PATH.exists():
-        return {"version": 1, "items": {}}
+        return {"version": 2, "items": {}}
     try:
         data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
         if not isinstance(data.get("items"), dict):
@@ -175,7 +215,9 @@ def update_state(state: dict, exhibitions: Iterable[Exhibition], now: datetime) 
     items: dict[str, dict] = state.setdefault("items", {})
 
     for item in items.values():
-        item["current"] = False
+        item["listed"] = False
+        # Compatibility with v1 state files.
+        item.pop("current", None)
 
     for exhibition in exhibitions:
         old = items.get(exhibition.url)
@@ -189,8 +231,10 @@ def update_state(state: dict, exhibitions: Iterable[Exhibition], now: datetime) 
                 "url": exhibition.url,
                 "start_date": exhibition.start_date,
                 "end_date": exhibition.end_date,
+                "status": exhibition.status,
+                "source_url": exhibition.source_url,
                 "last_seen": now_iso,
-                "current": True,
+                "listed": True,
             }
         )
 
@@ -201,7 +245,7 @@ def update_state(state: dict, exhibitions: Iterable[Exhibition], now: datetime) 
         reverse=True,
     )[:MAX_ARCHIVED_ITEMS]
     state["items"] = dict(ordered)
-    state["version"] = 1
+    state["version"] = 2
     state["updated_at"] = now_iso
     return state
 
@@ -219,7 +263,7 @@ def build_feed(state: dict, now: datetime) -> ET.ElementTree:
     rss = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(rss, "channel")
     ET.SubElement(channel, "title").text = FEED_TITLE
-    ET.SubElement(channel, "link").text = SOURCE_URL
+    ET.SubElement(channel, "link").text = EXHIBITIONS_URL
     ET.SubElement(channel, "description").text = FEED_DESCRIPTION
     ET.SubElement(channel, "language").text = "zh-TW"
     ET.SubElement(channel, "lastBuildDate").text = format_datetime(now)
@@ -232,20 +276,36 @@ def build_feed(state: dict, now: datetime) -> ET.ElementTree:
     )
 
     for entry in entries:
+        status = entry.get("status", "展覽")
+        start_date = human_date(entry.get("start_date", ""))
+        end_date = human_date(entry.get("end_date", ""))
+        title = entry.get("title", "未命名展覽")
+
         item = ET.SubElement(channel, "item")
-        ET.SubElement(item, "title").text = entry["title"]
+        # Date is deliberately included in the RSS title so readers that hide
+        # descriptions still show the exhibition period at a glance.
+        ET.SubElement(item, "title").text = (
+            f"[{status}] {title}｜{start_date}–{end_date}"
+        )
         ET.SubElement(item, "link").text = entry["url"]
         guid = ET.SubElement(item, "guid", {"isPermaLink": "true"})
         guid.text = entry["url"]
         ET.SubElement(item, "pubDate").text = format_datetime(parse_dt(entry["first_seen"]))
-        ET.SubElement(item, "category").text = "新展預告"
+        ET.SubElement(item, "category").text = status
+        ET.SubElement(item, "category").text = "臺北當代藝術館"
 
-        status = "目前仍列於新展預告" if entry.get("current") else "已離開新展預告頁面"
+        listing_status = (
+            f"目前列於「{status}」"
+            if entry.get("listed")
+            else "目前已不在「當期展覽／新展預告」清單"
+        )
+        source_url = entry.get("source_url", EXHIBITIONS_URL)
         description_html = (
-            f"<p><strong>展期：</strong>{human_date(entry['start_date'])} ～ "
-            f"{human_date(entry['end_date'])}</p>"
-            f"<p>{html.escape(status)}</p>"
-            f"<p><a href=\"{html.escape(entry['url'], quote=True)}\">查看官方展覽頁面</a></p>"
+            f"<p><strong>分類：</strong>{html.escape(status)}</p>"
+            f"<p><strong>展期：</strong>{html.escape(start_date)} ～ {html.escape(end_date)}</p>"
+            f"<p>{html.escape(listing_status)}</p>"
+            f"<p><a href=\"{html.escape(entry['url'], quote=True)}\">查看官方展覽頁面</a>"
+            f" ｜ <a href=\"{html.escape(source_url, quote=True)}\">查看官方{html.escape(status)}</a></p>"
         )
         ET.SubElement(item, "description").text = description_html
 
@@ -264,20 +324,31 @@ def write_outputs(state: dict, feed: ET.ElementTree) -> None:
 
 def main() -> int:
     now = datetime.now(timezone.utc).replace(microsecond=0)
-    page_html = fetch_page()
+    parsed_groups: list[list[Exhibition]] = []
 
-    # If the site returned a login/error/anti-bot page, fail safely instead of
-    # overwriting a good feed with an empty result. Zero upcoming exhibitions
-    # is still allowed when the expected page markers are present.
-    if "新展預告" not in page_html or "Exhibitions" not in page_html:
-        raise RuntimeError("MoCA 回傳內容不像新展預告頁面；本次停止更新以保護既有 RSS。")
+    for status, source_url, expected_label in SOURCES:
+        page_html = fetch_page(source_url)
 
-    exhibitions = parse_exhibitions(page_html)
+        # Fail safely if MoCA returns an error/anti-bot page instead of the
+        # exhibition list. A valid page is allowed to contain zero cards.
+        if expected_label not in page_html or "Exhibitions" not in page_html:
+            raise RuntimeError(
+                f"MoCA 回傳內容不像「{expected_label}」頁面；本次停止更新以保護既有 RSS。"
+            )
+
+        parsed_groups.append(parse_exhibitions(page_html, status, source_url))
+
+    exhibitions = merge_exhibitions(parsed_groups)
     state = update_state(load_state(), exhibitions, now)
     feed = build_feed(state, now)
     write_outputs(state, feed)
 
-    print(f"找到目前新展預告：{len(exhibitions)} 筆")
+    counts: dict[str, int] = {}
+    for exhibition in exhibitions:
+        counts[exhibition.status] = counts.get(exhibition.status, 0) + 1
+
+    print(f"找到目前當期展覽：{counts.get('當期展覽', 0)} 筆")
+    print(f"找到目前新展預告：{counts.get('新展預告', 0)} 筆")
     print(f"RSS 封存項目：{len(state['items'])} 筆")
     print(f"已輸出：{OUTPUT_PATH}")
     return 0
