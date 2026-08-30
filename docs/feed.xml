@@ -3,7 +3,17 @@
   <channel>
     <title>臺北當代藝術館｜新展預告</title>
     <link>https://www.mocataipei.org.tw/tw/ExhibitionAndEvent/Exhibitions/Upcoming</link>
-    <description>首次執行 GitHub Actions 後，這裡會自動產生展覽 RSS。</description>
+    <description>自動追蹤臺北當代藝術館（MoCA Taipei）官方網站的新展預告。</description>
     <language>zh-TW</language>
+    <lastBuildDate>Sun, 30 Aug 2026 11:49:59 +0000</lastBuildDate>
+    <generator>moca-rss GitHub Actions</generator>
+    <item>
+      <title>美術館之後</title>
+      <link>https://www.mocataipei.org.tw/tw/ExhibitionAndEvent/Info/美術館之後</link>
+      <guid isPermaLink="true">https://www.mocataipei.org.tw/tw/ExhibitionAndEvent/Info/美術館之後</guid>
+      <pubDate>Sun, 30 Aug 2026 11:49:59 +0000</pubDate>
+      <category>新展預告</category>
+      <description>&lt;p&gt;&lt;strong&gt;展期：&lt;/strong&gt;2026/09/19 ～ 2026/12/31&lt;/p&gt;&lt;p&gt;目前仍列於新展預告&lt;/p&gt;&lt;p&gt;&lt;a href="https://www.mocataipei.org.tw/tw/ExhibitionAndEvent/Info/美術館之後"&gt;查看官方展覽頁面&lt;/a&gt;&lt;/p&gt;</description>
+    </item>
   </channel>
 </rss>
